@@ -3,23 +3,16 @@ import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.refund";
 import { getCurrentUserId } from "~/lib/session";
 import { db } from "~/db";
+import { courses, purchases, refunds, users, RefundStatus } from "~/db/schema";
+import { and, eq, sql } from "drizzle-orm";
 import {
-  courses,
-  coupons,
-  lessons,
-  modules,
-  purchases,
-  refunds,
-  users,
-  videoWatchEvents,
-  RefundStatus,
-} from "~/db/schema";
-import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
+  REFUND_WINDOW_DAYS,
+  hasWatchedTooMuch,
+  isWithinRefundWindow,
+} from "~/lib/refund-rules";
+import { getWatchedSeconds, hasClaimedSeat } from "~/lib/refunds.server";
 import { parseFormData, parseParams } from "~/lib/validation";
 import { formatPrice } from "~/lib/utils";
-
-const REFUND_WINDOW_DAYS = 14;
-const MAX_WATCHED_HOURS = 2;
 
 const refundParamsSchema = z.object({
   slug: z.string().min(1),
@@ -46,17 +39,6 @@ function getLatestPurchase(userId: number, courseId: number) {
     .get();
 }
 
-function getLessonIdsForCourse(courseId: number): number[] {
-  const rows = db
-    .select({ id: lessons.id })
-    .from(lessons)
-    .innerJoin(modules, eq(lessons.moduleId, modules.id))
-    .where(eq(modules.courseId, courseId))
-    .all();
-
-  return rows.map((row) => row.id);
-}
-
 function getOpenRefundRequest(purchaseId: number) {
   return db
     .select()
@@ -68,20 +50,6 @@ function getOpenRefundRequest(purchaseId: number) {
       )
     )
     .get();
-}
-
-// The fourteen-day window is counted in whole days, not hours — someone who
-// buys at 23:00 should still get the whole of their fourteenth day.
-function calendarDay(when: Date): string {
-  const month = String(when.getMonth() + 1).padStart(2, "0");
-  const day = String(when.getDate()).padStart(2, "0");
-  return `${when.getFullYear()}-${month}-${day}`;
-}
-
-function lastDayOfWindow(purchasedAtIso: string): string {
-  const deadline = new Date(purchasedAtIso);
-  deadline.setDate(deadline.getDate() + REFUND_WINDOW_DAYS);
-  return calendarDay(deadline);
 }
 
 /**
@@ -148,52 +116,17 @@ export async function action({ params, request }: Route.ActionArgs) {
 
   // A seat that came out of a team licence, and has been claimed, belongs to
   // the team — the learner cannot hand it back on their own.
-  const claimedSeat = db
-    .select({ id: coupons.id })
-    .from(coupons)
-    .where(
-      and(eq(coupons.purchaseId, purchase.id), isNotNull(coupons.redeemedAt))
-    )
-    .get();
-
-  if (claimedSeat) {
+  if (hasClaimedSeat(purchase.id)) {
     throw data("A claimed team seat cannot be refunded.", { status: 403 });
   }
 
-  const today = calendarDay(new Date());
-  const withinRefundWindow = today <= lastDayOfWindow(purchase.createdAt);
-
-  if (!withinRefundWindow) {
+  if (!isWithinRefundWindow(purchase.createdAt, new Date())) {
     throw data(`The ${REFUND_WINDOW_DAYS}-day window has closed.`, {
       status: 403,
     });
   }
 
-  const courseLessonIds = getLessonIdsForCourse(course.id);
-
-  let watchedSeconds = 0;
-  if (courseLessonIds.length > 0) {
-    const furthestPerLesson = db
-      .select({
-        furthest: sql<number>`max(${videoWatchEvents.positionSeconds})`,
-      })
-      .from(videoWatchEvents)
-      .where(
-        and(
-          eq(videoWatchEvents.userId, currentUserId),
-          inArray(videoWatchEvents.lessonId, courseLessonIds)
-        )
-      )
-      .groupBy(videoWatchEvents.lessonId)
-      .all();
-
-    watchedSeconds = furthestPerLesson.reduce(
-      (total, row) => total + row.furthest,
-      0
-    );
-  }
-
-  if (watchedSeconds >= MAX_WATCHED_HOURS * 60 * 60) {
+  if (hasWatchedTooMuch(getWatchedSeconds(currentUserId, course.id))) {
     throw data("You have watched too much of this course to request a refund.", {
       status: 403,
     });

@@ -249,6 +249,8 @@ export const refunds = sqliteTable(
       .$defaultFn(() => new Date().toISOString()),
     resolvedAt: text("resolved_at"),
     resolvedByUserId: integer("resolved_by_user_id").references(() => users.id),
+    // The Admin's optional Decision Note. The learner can read it.
+    decisionNote: text("decision_note"),
   },
   (table) => [index("refunds_purchase_idx").on(table.purchaseId)]
 );
@@ -288,6 +290,9 @@ export const coupons = sqliteTable("coupons", {
     .references(() => purchases.id),
   redeemedByUserId: integer("redeemed_by_user_id").references(() => users.id),
   redeemedAt: text("redeemed_at"),
+  // Set when the purchase behind this coupon is refunded. A voided coupon can
+  // no longer be redeemed.
+  voidedAt: text("voided_at"),
   createdAt: text("created_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),

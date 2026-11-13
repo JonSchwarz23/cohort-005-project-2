@@ -2772,6 +2772,19 @@ This course is still in draft while the cluster examples are rewritten against t
       updatedAt: daysAgo(6),
     })
     .run();
+  // An earlier attempt an Admin declined, so the Admin screen has history.
+  db.insert(schema.refunds)
+    .values({
+      purchaseId: liamPurchase.id,
+      status: RefundStatus.Declined,
+      reason: "Not sure this is for me yet.",
+      requestedAt: daysAgo(8),
+      resolvedAt: daysAgo(7),
+      resolvedByUserId: admin.id,
+      decisionNote:
+        "Give the first module a go — if it still isn't right, ask again.",
+    })
+    .run();
   db.insert(schema.refunds)
     .values({
       purchaseId: liamPurchase.id,
